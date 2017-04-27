@@ -85,9 +85,9 @@ typedef struct TileEncodeContext
 
 typedef struct TileDimensions
 {
-    const size_t rows;
-    const size_t columns;
-    const size_t count;
+    size_t rows;
+    size_t columns;
+    size_t count;
 } TileDimensions;
 
 class VideoEncoder

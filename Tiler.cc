@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <string.h>
+#include <sstream>
 
 #include "VideoDecoder.h"
 #include "TileVideoEncoder.h"
@@ -11,6 +12,16 @@ typedef struct Statistics
     unsigned long long start, end, frequency;
 } Statistics;
 
+std::vector<std::string> split(const std::string &input, char delimiter) {
+    std::vector<std::string> elements;
+    std::stringstream stream(input);
+    std::string value;
+
+    while (std::getline(stream, value, delimiter))
+        elements.push_back(value);
+
+    return elements;
+}
 int error(const char* message, const int exitCode)
 {
     std::cerr << message;
@@ -86,7 +97,7 @@ int PrintHelp()
     return 1;
 }
 
-int DisplayConfiguration(const EncodeConfig& configuration)
+int DisplayConfiguration(const EncodeConfig& configuration, TileDimensions& dimensions)
 {
     printf("Encoding input           : \"%s\"\n", configuration.inputFileName);
     printf("         output          : \"%s\"\n", configuration.outputFileName);
@@ -114,6 +125,7 @@ int DisplayConfiguration(const EncodeConfig& configuration)
         (configuration.presetGUID == NV_ENC_PRESET_HQ_GUID) ? "HQ_PRESET" :
         (configuration.presetGUID == NV_ENC_PRESET_HP_GUID) ? "HP_PRESET" :
         (configuration.presetGUID == NV_ENC_PRESET_LOSSLESS_HP_GUID) ? "LOSSLESS_HP" : "LOW_LATENCY_DEFAULT");
+    printf("         Tiles           : %lu, %lu\n", dimensions.rows, dimensions.columns);
     printf("\n");
 
     return 0;
@@ -231,6 +243,24 @@ int DisplayStatistics(CudaDecoder& decoder, VideoEncoder& encoder, Statistics& s
     return 0;
 }
 
+
+int ParseTileParameters(EncodeConfig& configuration, TileDimensions& tileDimensions)
+{
+    auto values = split(configuration.outputFileName, ',');
+
+    if(values.size() != 3)
+        return error("Expected three arguments in output filename (e.g., '4,8,%d.h265')\n", -1);
+    else
+    {
+        tileDimensions.rows = stoi(values.at(0));
+        tileDimensions.columns = stoi(values.at(1));
+        tileDimensions.count = tileDimensions.rows * tileDimensions.columns;
+        strcpy(configuration.outputFileName, values.at(2).c_str());
+    }
+
+    return 0;
+}
+
 int main(int argc, char* argv[])
 {
     typedef void *CUDADRIVER;
@@ -243,8 +273,9 @@ int main(int argc, char* argv[])
     NVENCSTATUS status;
     CudaDecoder decoder;
     CUVIDFrameQueue frameQueue(lock);
-    float fpsRatio = 1.f;
+    TileDimensions tileDimensions;
     Statistics statistics;
+    float fpsRatio = 1.f;
 
 
     if((result = cuInit(0, __CUDA_API_VERSION, hHandleDriver)) != CUDA_SUCCESS)
@@ -267,13 +298,13 @@ int main(int argc, char* argv[])
     encodeConfig.presetGUID = NV_ENC_PRESET_DEFAULT_GUID;
     encodeConfig.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
 
-    unsigned int tileColumns = 8, tileRows = 4;
-
     // Verify arguments
     if((status = CNvHWEncoder::ParseArguments(&encodeConfig, argc, argv)) != NV_ENC_SUCCESS)
         return PrintHelp();
     else if (!encodeConfig.inputFileName || !encodeConfig.outputFileName)
         return PrintHelp();
+    else if (ParseTileParameters(encodeConfig, tileDimensions) != 0)
+        return error("ParseTileParameters", result);
 
     // Initialize CUDA
     else if((result = cuDeviceGet(&device, encodeConfig.deviceID)) != CUDA_SUCCESS)
@@ -288,12 +319,12 @@ int main(int argc, char* argv[])
         return error("InitializeDecoder", -1);
 
     // Initialize encoder
-    VideoEncoder encoder(lock, tileColumns, tileRows);
+    VideoEncoder encoder(lock, tileDimensions.columns, tileDimensions.rows);
     if((status = encoder.Initialize(cudaCtx, NV_ENC_DEVICE_TYPE_CUDA)) != NV_ENC_SUCCESS)
         return error("encoder.Initialize", -1);
 
 //    encodeConfig.presetGUID = NV_ENC_PRESET_DEFAULT_GUID; //encoder->GetPresetGUID();
-    else if(DisplayConfiguration(encodeConfig) != 0)
+    else if(DisplayConfiguration(encodeConfig, tileDimensions) != 0)
         return error("DisplayConfiguration", -1);
     else if((status = encoder.CreateEncoders(encodeConfig)) != NV_ENC_SUCCESS)
         return error("CreateEncoders", -1);

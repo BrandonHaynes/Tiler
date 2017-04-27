@@ -27,3 +27,8 @@
 *.out
 *.app
 tiler
+
+# Inputs
+*.mp4
+*.h265
+*.h264
