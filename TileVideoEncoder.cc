@@ -72,8 +72,8 @@ NVENCSTATUS VideoEncoder::AllocateIOBuffer(TileEncodeContext& context, const Enc
 {
     NVENCSTATUS status;
     CUresult result;
-    auto sourceWidth  = configuration.width;// * tileDimensions.columns;
-    auto sourceHeight = configuration.height;// * tileDimensions.rows;
+    auto tileWidth  = configuration.width / tileDimensions.columns;
+    auto tileHeight = configuration.height / tileDimensions.rows;
 
     for (auto i = 0; i < encodeBufferSize; i++) {
         auto& buffer = context.encodeBuffer[i];
@@ -83,15 +83,15 @@ NVENCSTATUS VideoEncoder::AllocateIOBuffer(TileEncodeContext& context, const Enc
         else if((result = (cuMemAllocPitch(
                 &buffer.stInputBfr.pNV12devPtr,
                 (size_t*)&buffer.stInputBfr.uNV12Stride,
-                sourceWidth,
-                sourceHeight * 3/2, 16))) != CUDA_SUCCESS)
+                tileWidth,
+                tileHeight * (3/2) * 2, 16))) != CUDA_SUCCESS)
             return error("cuMemAllocPitch", result, NV_ENC_ERR_GENERIC);
         else if((result = cuvidCtxUnlock(lock, 0)) != CUDA_SUCCESS)
             return error("cuvidCtxUnlock", result, NV_ENC_ERR_GENERIC);
         else if((status = context.hardwareEncoder.NvEncRegisterResource(
                 NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
                 (void*)buffer.stInputBfr.pNV12devPtr,
-                sourceWidth, sourceHeight,
+                tileWidth, tileHeight,
                 buffer.stInputBfr.uNV12Stride,
                 &buffer.stInputBfr.nvRegisteredResource)) != NV_ENC_SUCCESS)
             return error("NvEncRegisterResource", status);
@@ -102,8 +102,8 @@ NVENCSTATUS VideoEncoder::AllocateIOBuffer(TileEncodeContext& context, const Enc
         else
         {
             buffer.stInputBfr.bufferFmt = NV_ENC_BUFFER_FORMAT_NV12_PL;
-            buffer.stInputBfr.dwWidth = sourceWidth;
-            buffer.stInputBfr.dwHeight = sourceHeight;
+            buffer.stInputBfr.dwWidth = tileWidth;
+            buffer.stInputBfr.dwHeight = tileHeight;
             buffer.stOutputBfr.dwBitstreamBufferSize = BITSTREAM_BUFFER_SIZE;
             buffer.stOutputBfr.hOutputEvent = NULL;
         }
@@ -220,7 +220,7 @@ NVENCSTATUS VideoEncoder::EncodeFrame(EncodeFrameConfig *inputFrame,
         auto offsetX = column * tileWidth;
         auto offsetY = row * tileHeight;
 
-        CUDA_MEMCPY2D copyParameters = {
+        CUDA_MEMCPY2D lumaPlaneParameters = {
             srcXInBytes:   offsetX,
             srcY:          offsetY,
             srcMemoryType: CU_MEMORYTYPE_DEVICE,
@@ -237,13 +237,36 @@ NVENCSTATUS VideoEncoder::EncodeFrame(EncodeFrameConfig *inputFrame,
             dstArray:      NULL,
             dstPitch:      encodeBuffer->stInputBfr.uNV12Stride,
 
-            WidthInBytes:  screenWidth - offsetX,
-            Height:        (screenHeight - offsetY)*3/2,
+            WidthInBytes:  tileWidth,
+            Height:        tileHeight,
+            };
+
+        CUDA_MEMCPY2D chromaPlaneParameters = {
+            srcXInBytes:   offsetX,
+            srcY:          screenHeight + offsetY/2,
+            srcMemoryType: CU_MEMORYTYPE_DEVICE,
+            srcHost:       NULL,
+            srcDevice:     inputFrame->device_pointer,
+            srcArray:      NULL,
+            srcPitch:      inputFrame->pitch,
+
+            dstXInBytes:   0,
+            dstY:          tileHeight,
+            dstMemoryType: CU_MEMORYTYPE_DEVICE,
+            dstHost:       NULL,
+            dstDevice:     (CUdeviceptr)encodeBuffer->stInputBfr.pNV12devPtr,
+            dstArray:      NULL,
+            dstPitch:      encodeBuffer->stInputBfr.uNV12Stride,
+
+            WidthInBytes:  tileWidth,
+            Height:        tileHeight/2
             };
 
         if((result = cuvidCtxLock(lock, 0)) != CUDA_SUCCESS)
             return error("cuvidCtxLock", result, NV_ENC_ERR_GENERIC);
-        else if((result = cuMemcpy2D(&copyParameters)) != CUDA_SUCCESS)
+        else if((result = cuMemcpy2D(&lumaPlaneParameters)) != CUDA_SUCCESS)
+            return error("cuMemcpy2D", result, NV_ENC_ERR_GENERIC);
+        else if((result = cuMemcpy2D(&chromaPlaneParameters)) != CUDA_SUCCESS)
             return error("cuMemcpy2D", result, NV_ENC_ERR_GENERIC);
         else if((result = cuvidCtxUnlock(lock, 0)) != CUDA_SUCCESS)
             return error("cuvidCtxUnlock", result, NV_ENC_ERR_GENERIC);
